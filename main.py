@@ -3,6 +3,14 @@ import time
 from src.circuit import FlatCircuit
 from src.r1cs import R1CS
 from src.witness import WitnessGenerator
+from src.finite_field import FieldElement
+
+# A standard large prime used in examples (or use the BN128 scalar field)
+PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+
+def to_field(num):
+    """Helper to convert int -> FieldElement"""
+    return FieldElement(num, PRIME)
 
 def print_slow(str):
     for letter in str:
@@ -40,73 +48,69 @@ def get_user_input():
         return 1990
 
 def id_card_circuit():
-    # --- STEP 1: DEFINE CIRCUIT ---
     circuit = FlatCircuit()
     
-    # Define wires
     current_year = "2026"
-    dob = "dob"          # Renamed to generic 'dob' for variable input
+    dob = "dob"
     threshold = "21"
     
-    # Circuit Logic: 
-    # 1. Calculate Age
+    # Logic (Remains the same!)
     age = circuit.sub(current_year, dob, output_name="age")
-    # 2. Check Threshold (Age - 21)
     result = circuit.sub(age, threshold, output_name="result")
     
-    # --- STEP 2: COMPILE R1CS ---
-    # We only do this once! The rules don't change, only the data does.
+    # Compile
     r1cs = R1CS(circuit)
     
-    # --- STEP 3: INTERACTIVE INPUT ---
-    user_dob = get_user_input()
+    # Get Input
+    user_dob_int = get_user_input()
     
+    # We wrap inputs in FieldElements. The entire circuit will now
+    # automatically execute using Modular Arithmetic.
     input_data = {
-        "2026": 2026,
-        "dob": user_dob, # The user's chosen input
-        "21": 21
+        "2026": to_field(2026),
+        "dob": to_field(user_dob_int),
+        "21": to_field(21)
     }
     
-    # --- STEP 4: WITNESS & VERIFY ---
-    print_slow("\n>>> GENERATING ZK-PROOF WITNESS...")
+    print_slow("\n>>> COMPUTING OVER FINITE FIELD (Modulo P)...")
     wg = WitnessGenerator(circuit, r1cs)
     w = wg.generate(input_data)
     
-    print("\n>>> VERIFYING CONSTRAINTS ON-CHAIN...")
-    time.sleep(1)
-    
+    # Verify
+    print("\n>>> VERIFYING CONSTRAINTS...")
     verified = True
     for i in range(len(r1cs.A)):
-        # Dot product: (Row A * w) * (Row B * w) = (Row C * w)
+        # Calculate dot products using field arithmetic
+        # (Since w contains FieldElements, sum() and * work automatically)
         a_val = sum(r1cs.A[i][j] * w[j] for j in range(len(w)))
         b_val = sum(r1cs.B[i][j] * w[j] for j in range(len(w)))
         c_val = sum(r1cs.C[i][j] * w[j] for j in range(len(w)))
         
         check = (a_val * b_val) - c_val
         
-        if check != 0:
+        # Check if result is 0 (modulo P)
+        if check.value != 0:
             verified = False
-            print(f" [x] Constraint {i} FAILED: {a_val} * {b_val} != {c_val}")
-    
+            print(f" [x] Constraint {i} FAILED")
+
     print("-" * 40)
-    # LOGIC CHECK: 
-    # In this simple arithmetic circuit, we check two things:
-    # 1. Did the math validly execute? (Constraints Passed)
-    # 2. Is the result positive? (Logic Check)
-    # Note: In a real SNARK, positivity is a constraint. Here, we check the output value.
     
+    # Check Result
     result_idx = r1cs.var_map["result"]
-    result_value = w[result_idx]
+    result_val = w[result_idx].value
     
-    if verified and result_value > 0:
-        print(f" ACCESS GRANTED. (Age Check: +{result_value})")
-        print(" The Prover honestly computed they are over 21.")
-    elif verified and result_value <= 0:
-        print(f" ACCESS DENIED. (Age Check: {result_value})")
-        print(" The Prover honestly computed they are UNDERAGE.")
+    # Note: In Finite Fields, "Negative" numbers look like Huge Positive numbers.
+    # e.g. -1 % 7 = 6.
+    # So we check if the number is "small positive" or "huge (negative)".
+    half_prime = PRIME // 2
+    
+    if verified:
+        if result_val < half_prime:
+            print(f" ACCESS GRANTED. (Proof Valid, Age Check: +{result_val})")
+        else:
+            print(f" ACCESS DENIED. (Proof Valid, Age Check: Negative/Underage)")
     else:
         print(" CRITICAL ERROR: PROOF INVALID.")
-        print(" The math does not check out. The Prover is lying about the calculation.")
 
 if __name__ == "__main__":
     id_card_circuit()
